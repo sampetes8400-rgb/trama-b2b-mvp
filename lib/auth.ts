@@ -1,23 +1,26 @@
 /**
  * Configuración central de NextAuth con credenciales y soporte de roles.
+ *
+ * En este archivo NO importamos Prisma ni bcryptjs a nivel de módulo.
+ * Ambos se cargan de forma dinámica (lazy) dentro de las funciones.
+ * Así Prisma NUNCA se ejecuta durante `next build` en Vercel.
  */
-import { PrismaAdapter } from '@auth/prisma-adapter';
-import { compare } from 'bcryptjs';
 import type { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
-import { prisma } from '@/lib/prisma';
 
-/**
- * Define el comportamiento de autenticación y cómo se propagan rol y empresa a la sesión.
- */
+async function getPrisma() {
+  const mod = await import('@/lib/prisma');
+  return mod.prisma;
+}
+
+async function comparePassword(plain: string, hashed: string) {
+  const bcrypt = await import('bcryptjs');
+  return bcrypt.compare(plain, hashed);
+}
+
 export const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma),
-  session: {
-    strategy: 'jwt'
-  },
-  pages: {
-    signIn: '/auth/login'
-  },
+  session: { strategy: 'jwt' },
+  pages: { signIn: '/auth/login' },
   providers: [
     CredentialsProvider({
       name: 'Credenciales',
@@ -29,22 +32,14 @@ export const authOptions: NextAuthOptions = {
         if (!credentials?.email || !credentials.password) {
           throw new Error('Credenciales incompletas.');
         }
-
+        const prisma = await getPrisma();
         const user = await prisma.user.findUnique({
           where: { email: credentials.email },
           include: { company: true }
         });
-
-        if (!user?.password) {
-          throw new Error('Usuario no encontrado.');
-        }
-
-        const isValid = await compare(credentials.password, user.password);
-
-        if (!isValid) {
-          throw new Error('Contraseña incorrecta.');
-        }
-
+        if (!user?.password) throw new Error('Usuario no encontrado.');
+        const ok = await comparePassword(credentials.password, user.password);
+        if (!ok) throw new Error('Contraseña incorrecta.');
         return {
           id: user.id,
           email: user.email,
@@ -61,7 +56,6 @@ export const authOptions: NextAuthOptions = {
         token.role = (user as { role?: string }).role;
         token.companyId = (user as { companyId?: string }).companyId;
       }
-
       return token;
     },
     async session({ session, token }) {
@@ -70,7 +64,6 @@ export const authOptions: NextAuthOptions = {
         session.user.role = (token.role as string) ?? 'BUYER';
         session.user.companyId = (token.companyId as string) ?? null;
       }
-
       return session;
     }
   },
